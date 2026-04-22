@@ -19,14 +19,19 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          echo "Latest tag: $LATEST_TAG"
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Latest tag: ${LATEST_TAG:-none}"
 
-          COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s")
+          if [ -z "$LATEST_TAG" ]; then
+            COMMITS=$(git log HEAD --pretty=format:"%s")
+          else
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s")
+          fi
           echo "Commits since last tag:"
           echo "$COMMITS"
 
-          VERSION=${LATEST_TAG#v}
+          VERSION=${LATEST_TAG:-v0.0.0}
+          VERSION=${VERSION#v}
           MAJOR=$(echo $VERSION | cut -d. -f1)
           MINOR=$(echo $VERSION | cut -d. -f2)
           PATCH=$(echo $VERSION | cut -d. -f3)
