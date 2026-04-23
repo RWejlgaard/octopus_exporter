@@ -1,11 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,8 +9,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-const octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
 
 var (
 	apiKey = mustEnv("OCTOPUS_API_KEY")
@@ -37,209 +30,60 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-type gqlRequest struct {
-	OperationName string         `json:"operationName,omitempty"`
-	Variables     map[string]any `json:"variables"`
-	Query         string         `json:"query"`
-}
-
-func doGraphQL(req gqlRequest, authToken string) (map[string]any, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequest(http.MethodPost, octopusGraphQL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if authToken != "" {
-		httpReq.Header.Set("Authorization", "JWT "+authToken)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, err
-	}
-
-	if errs, ok := result["errors"].([]any); ok && len(errs) > 0 {
-		if e, ok := errs[0].(map[string]any); ok {
-			return nil, fmt.Errorf("GraphQL error: %s", e["message"])
-		}
-		return nil, errors.New("GraphQL error")
-	}
-
-	return result, nil
-}
-
-func getKrakenToken(apiKey string) (string, error) {
-	result, err := doGraphQL(gqlRequest{
-		Variables: map[string]any{"apikey": apiKey},
-		Query: `mutation krakenTokenAuthentication($apikey: String!) {
-			obtainKrakenToken(input: {APIKey: $apikey}) {
-				token
-			}
-		}`,
-	}, "")
-	if err != nil {
-		return "", err
-	}
-
-	token, ok := result["data"].(map[string]any)["obtainKrakenToken"].(map[string]any)["token"].(string)
-	if !ok {
-		return "", errors.New("token not found in response")
-	}
-	return token, nil
-}
-
-type meterCandidate struct {
-	mpan     string
-	serial   string
-	deviceID string
-}
-
-func getMeters(token string) ([]meterCandidate, error) {
-	result, err := doGraphQL(gqlRequest{
-		Query: `{ viewer { accounts { ... on AccountType { properties {
-			electricityMeterPoints {
-				mpan
-				meters {
-					serialNumber
-					smartDevices { deviceId }
-				}
-			}
-		} } } } }`,
-	}, token)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []meterCandidate
-
-	accounts, _ := result["data"].(map[string]any)["viewer"].(map[string]any)["accounts"].([]any)
-	for _, a := range accounts {
-		props, _ := a.(map[string]any)["properties"].([]any)
-		for _, p := range props {
-			mps, _ := p.(map[string]any)["electricityMeterPoints"].([]any)
-			for _, mp := range mps {
-				mpan, _ := mp.(map[string]any)["mpan"].(string)
-				meters, _ := mp.(map[string]any)["meters"].([]any)
-				for _, m := range meters {
-					serial, _ := m.(map[string]any)["serialNumber"].(string)
-					devices, _ := m.(map[string]any)["smartDevices"].([]any)
-					for _, d := range devices {
-						deviceID, _ := d.(map[string]any)["deviceId"].(string)
-						if deviceID != "" {
-							candidates = append(candidates, meterCandidate{
-								mpan:     mpan,
-								serial:   serial,
-								deviceID: deviceID,
-							})
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return candidates, nil
-}
-
-func resolveDeviceID(token string) (string, error) {
-	wantDeviceID := os.Getenv("OCTOPUS_DEVICE_ID")
-	wantMPAN := os.Getenv("OCTOPUS_MPAN")
-	wantSerial := os.Getenv("OCTOPUS_SERIAL")
-
-	if wantDeviceID != "" && wantMPAN == "" && wantSerial == "" {
-		return wantDeviceID, nil
-	}
-
-	log.Println("discovering meters from account...")
-	candidates, err := getMeters(token)
-	if err != nil {
-		return "", err
-	}
-	if len(candidates) == 0 {
-		return "", errors.New("no smart meters found on account")
-	}
-
-	for _, c := range candidates {
-		if wantDeviceID != "" && c.deviceID != wantDeviceID {
-			continue
-		}
-		if wantMPAN != "" && c.mpan != wantMPAN {
-			continue
-		}
-		if wantSerial != "" && c.serial != wantSerial {
-			continue
-		}
-		log.Printf("using meter: MPAN=%s serial=%s deviceID=%s", c.mpan, c.serial, c.deviceID)
-		return c.deviceID, nil
-	}
-
-	return "", fmt.Errorf("no meter matched OCTOPUS_DEVICE_ID=%q OCTOPUS_MPAN=%q OCTOPUS_SERIAL=%q", wantDeviceID, wantMPAN, wantSerial)
-}
-
-type telemetryReading struct {
-	ReadAt      string  `json:"readAt"`
-	Consumption float64 `json:"consumption"`
-	Demand      float64 `json:"demand"`
-}
-
-var errTokenExpired = errors.New("token expired")
-
-func getLiveConsumption(token, deviceID string) (*telemetryReading, error) {
-	result, err := doGraphQL(gqlRequest{
-		OperationName: "getSmartMeterTelemetry",
-		Variables:     map[string]any{"meterDeviceId": deviceID},
-		Query:         "query getSmartMeterTelemetry($meterDeviceId: String!, $start: DateTime, $end: DateTime, $grouping: TelemetryGrouping) {\n  smartMeterTelemetry(deviceId: $meterDeviceId, start: $start, end: $end, grouping: $grouping) {\n    readAt\n    consumption\n    demand\n    __typename\n  }\n}\n",
-	}, token)
-	if err != nil {
-		if err.Error() == "GraphQL error: Signature of the JWT has expired." {
-			return nil, errTokenExpired
-		}
-		return nil, err
-	}
-
-	telemetry, ok := result["data"].(map[string]any)["smartMeterTelemetry"].([]any)
-	if !ok || len(telemetry) == 0 {
-		return nil, errors.New("no data found")
-	}
-
-	raw, err := json.Marshal(telemetry[0])
-	if err != nil {
-		return nil, err
-	}
-
-	var reading telemetryReading
-	if err := json.Unmarshal(raw, &reading); err != nil {
-		return nil, err
-	}
-	return &reading, nil
+func gauge(name, help string) prometheus.Gauge {
+	return prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help})
 }
 
 func main() {
-	liveConsumption := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "octopus_live_consumption",
-		Help: "Octopus Energy live consumption in watts",
-	})
-	lastRead := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "octopus_live_consumption_last_read",
-		Help: "Octopus Energy live consumption last read in seconds since epoch",
-	})
-	prometheus.MustRegister(liveConsumption, lastRead)
+	token, err := getKrakenToken(apiKey)
+	if err != nil {
+		log.Fatalf("failed to get initial token: %v", err)
+	}
+
+	elecDeviceID, err := resolveDeviceID(token, electricity)
+	if err != nil {
+		log.Fatalf("failed to resolve electricity meter: %v", err)
+	}
+	if elecDeviceID == "" {
+		log.Fatal("no electricity smart meter found on account")
+	}
+
+	gasDeviceID, err := resolveDeviceID(token, gas)
+	if err != nil {
+		log.Fatalf("failed to resolve gas meter: %v", err)
+	}
+	if gasDeviceID == "" {
+		log.Println("no gas smart meter found — gas metrics disabled")
+	}
+
+	// Electricity telemetry
+	elecDemand := gauge("octopus_electricity_demand_watts", "Live electricity demand in watts")
+	elecLastRead := gauge("octopus_electricity_last_read_timestamp", "Unix timestamp of last electricity reading")
+
+	// Electricity tariff
+	elecUnitRate := gauge("octopus_electricity_unit_rate_pence", "Current electricity unit rate in pence per kWh")
+	elecStandingCharge := gauge("octopus_electricity_standing_charge_pence", "Current electricity standing charge in pence per day")
+
+	// Account
+	accountBalance := gauge("octopus_account_balance_pence", "Account balance in pence (positive = credit, negative = debit)")
+
+	toRegister := []prometheus.Collector{elecDemand, elecLastRead, elecUnitRate, elecStandingCharge, accountBalance}
+
+	var (
+		gasDemand      prometheus.Gauge
+		gasLastRead    prometheus.Gauge
+		gasUnitRate    prometheus.Gauge
+		gasStandCharge prometheus.Gauge
+	)
+	if gasDeviceID != "" {
+		gasDemand = gauge("octopus_gas_demand_watts", "Live gas demand in watts")
+		gasLastRead = gauge("octopus_gas_last_read_timestamp", "Unix timestamp of last gas reading")
+		gasUnitRate = gauge("octopus_gas_unit_rate_pence", "Current gas unit rate in pence per kWh")
+		gasStandCharge = gauge("octopus_gas_standing_charge_pence", "Current gas standing charge in pence per day")
+		toRegister = append(toRegister, gasDemand, gasLastRead, gasUnitRate, gasStandCharge)
+	}
+
+	prometheus.MustRegister(toRegister...)
 
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
@@ -249,34 +93,55 @@ func main() {
 		}
 	}()
 
-	token, err := getKrakenToken(apiKey)
-	if err != nil {
-		log.Fatalf("failed to get initial token: %v", err)
-	}
-
-	deviceID, err := resolveDeviceID(token)
-	if err != nil {
-		log.Fatalf("failed to resolve device ID: %v", err)
-	}
-
 	for {
-		reading, err := getLiveConsumption(token, deviceID)
+		// Electricity telemetry
+		reading, err := getLiveConsumption(token, elecDeviceID)
 		if err != nil {
-			log.Printf("error fetching telemetry: %v", err)
-			token, err = getKrakenToken(apiKey)
-			if err != nil {
-				log.Printf("failed to refresh token: %v", err)
+			log.Printf("electricity telemetry error: %v", err)
+			if token, err = getKrakenToken(apiKey); err != nil {
+				log.Printf("token refresh failed: %v", err)
 			}
 		} else {
-			liveConsumption.Set(reading.Demand)
-
-			t, err := time.Parse("2006-01-02T15:04:05+00:00", reading.ReadAt)
-			if err != nil {
-				log.Printf("failed to parse readAt %q: %v", reading.ReadAt, err)
-			} else {
-				lastRead.Set(float64(t.Unix()))
+			elecDemand.Set(float64(reading.Demand))
+			if t, err := time.Parse("2006-01-02T15:04:05+00:00", reading.ReadAt); err == nil {
+				elecLastRead.Set(float64(t.Unix()))
 			}
 		}
+
+		// Gas telemetry
+		if gasDeviceID != "" {
+			reading, err := getLiveConsumption(token, gasDeviceID)
+			if err != nil {
+				log.Printf("gas telemetry error: %v", err)
+			} else {
+				gasDemand.Set(float64(reading.Demand))
+				if t, err := time.Parse("2006-01-02T15:04:05+00:00", reading.ReadAt); err == nil {
+					gasLastRead.Set(float64(t.Unix()))
+				}
+			}
+		}
+
+		// Rates
+		rates, err := getRates(token)
+		if err != nil {
+			log.Printf("rates error: %v", err)
+		} else {
+			elecUnitRate.Set(rates.ElectricityUnitRate)
+			elecStandingCharge.Set(rates.ElectricityStandingCharge)
+			if gasDeviceID != "" {
+				gasUnitRate.Set(rates.GasUnitRate)
+				gasStandCharge.Set(rates.GasStandingCharge)
+			}
+		}
+
+		// Account balance
+		balance, err := getAccountBalance(token)
+		if err != nil {
+			log.Printf("account balance error: %v", err)
+		} else {
+			accountBalance.Set(balance)
+		}
+
 		time.Sleep(60 * time.Second)
 	}
 }
