@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +19,13 @@ type meterCandidate struct {
 	mprn     string
 	serial   string
 	deviceID string
+}
+
+type resolvedMeter struct {
+	deviceID string
+	mpan     string // electricity
+	mprn     string // gas
+	serial   string
 }
 
 func getMeters(token string) ([]meterCandidate, error) {
@@ -63,6 +69,10 @@ func getMeters(token string) ([]meterCandidate, error) {
 							candidates = append(candidates, meterCandidate{kind: electricity, mpan: mpan, serial: serial, deviceID: deviceID})
 						}
 					}
+					// Include meters without smart devices so we can still use the REST consumption endpoint.
+					if len(toSlice(m.(map[string]any)["smartDevices"])) == 0 && serial != "" {
+						candidates = append(candidates, meterCandidate{kind: electricity, mpan: mpan, serial: serial})
+					}
 				}
 			}
 
@@ -76,6 +86,9 @@ func getMeters(token string) ([]meterCandidate, error) {
 							candidates = append(candidates, meterCandidate{kind: gas, mprn: mprn, serial: serial, deviceID: deviceID})
 						}
 					}
+					if len(toSlice(m.(map[string]any)["smartDevices"])) == 0 && serial != "" {
+						candidates = append(candidates, meterCandidate{kind: gas, mprn: mprn, serial: serial})
+					}
 				}
 			}
 		}
@@ -84,9 +97,9 @@ func getMeters(token string) ([]meterCandidate, error) {
 	return candidates, nil
 }
 
-// resolveDeviceID finds the device ID for the given meter kind using environment
-// variable filters. Returns ("", nil) if no meter of that kind exists on the account.
-func resolveDeviceID(token string, kind meterKind) (string, error) {
+// resolveMeter finds the meter matching the env var filters for the given kind.
+// Returns (nil, nil) if no meter of that kind exists on the account.
+func resolveMeter(token string, kind meterKind) (*resolvedMeter, error) {
 	var wantDeviceID, wantID, wantSerial string
 	switch kind {
 	case electricity:
@@ -99,14 +112,10 @@ func resolveDeviceID(token string, kind meterKind) (string, error) {
 		wantSerial = os.Getenv("OCTOPUS_GAS_SERIAL")
 	}
 
-	if wantDeviceID != "" && wantID == "" && wantSerial == "" {
-		return wantDeviceID, nil
-	}
-
 	log.Printf("discovering %s meters from account...", kind)
 	candidates, err := getMeters(token)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	for _, c := range candidates {
@@ -127,28 +136,19 @@ func resolveDeviceID(token string, kind meterKind) (string, error) {
 		if wantSerial != "" && c.serial != wantSerial {
 			continue
 		}
+
+		m := &resolvedMeter{deviceID: c.deviceID, mpan: c.mpan, mprn: c.mprn, serial: c.serial}
 		switch kind {
 		case electricity:
-			log.Printf("using electricity meter: MPAN=%s serial=%s deviceID=%s", c.mpan, c.serial, c.deviceID)
+			log.Printf("using electricity meter: MPAN=%s serial=%s deviceID=%s", m.mpan, m.serial, m.deviceID)
 		case gas:
-			log.Printf("using gas meter: MPRN=%s serial=%s deviceID=%s", c.mprn, c.serial, c.deviceID)
+			log.Printf("using gas meter: MPRN=%s serial=%s deviceID=%s", m.mprn, m.serial, m.deviceID)
 		}
-		return c.deviceID, nil
+		return m, nil
 	}
 
 	if wantDeviceID != "" || wantID != "" || wantSerial != "" {
-		return "", fmt.Errorf("no %s meter matched the specified filters", kind)
+		return nil, fmt.Errorf("no %s meter matched the specified filters", kind)
 	}
-
-	// No filters set and no meter found — this kind may not be on the account.
-	filtered := 0
-	for _, c := range candidates {
-		if c.kind == kind {
-			filtered++
-		}
-	}
-	if filtered == 0 {
-		return "", nil
-	}
-	return "", errors.New("unexpected: meters found but none selected")
+	return nil, nil
 }

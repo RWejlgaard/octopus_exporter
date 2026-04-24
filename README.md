@@ -6,29 +6,33 @@ A Prometheus exporter for Octopus Energy smart meter data, using the Kraken Grap
 
 ### Electricity
 
-| Metric | Description |
-|---|---|
-| `octopus_electricity_demand_watts` | Live electricity demand in watts |
-| `octopus_electricity_last_read_timestamp` | Unix timestamp of last electricity reading |
-| `octopus_electricity_unit_rate_pence` | Current unit rate in pence per kWh |
-| `octopus_electricity_standing_charge_pence` | Current standing charge in pence per day |
+| Metric | Source | Description |
+|---|---|---|
+| `octopus_electricity_demand_watts` | GraphQL | Live electricity demand in watts |
+| `octopus_electricity_last_read_timestamp` | GraphQL | Unix timestamp of last electricity reading |
+| `octopus_electricity_consumption_kwh` | REST | Latest half-hourly consumption in kWh |
+| `octopus_electricity_consumption_interval_timestamp` | REST | Unix timestamp of the start of the latest consumption interval |
+| `octopus_electricity_unit_rate_pence` | GraphQL / REST | Current unit rate in pence per kWh (Agile customers get the live half-hourly rate from the REST API) |
+| `octopus_electricity_standing_charge_pence` | GraphQL | Current standing charge in pence per day |
 
 ### Gas
 
 Gas metrics are only exposed if a smart gas meter is found on the account.
 
-| Metric | Description |
-|---|---|
-| `octopus_gas_demand_watts` | Live gas demand in watts |
-| `octopus_gas_last_read_timestamp` | Unix timestamp of last gas reading |
-| `octopus_gas_unit_rate_pence` | Current unit rate in pence per kWh |
-| `octopus_gas_standing_charge_pence` | Current standing charge in pence per day |
+| Metric | Source | Description |
+|---|---|---|
+| `octopus_gas_demand_watts` | GraphQL | Live gas demand in watts |
+| `octopus_gas_last_read_timestamp` | GraphQL | Unix timestamp of last gas reading |
+| `octopus_gas_consumption_kwh` | REST | Latest half-hourly consumption in kWh |
+| `octopus_gas_consumption_interval_timestamp` | REST | Unix timestamp of the start of the latest gas consumption interval |
+| `octopus_gas_unit_rate_pence` | GraphQL | Current unit rate in pence per kWh |
+| `octopus_gas_standing_charge_pence` | GraphQL | Current standing charge in pence per day |
 
 ### Account
 
-| Metric | Description |
-|---|---|
-| `octopus_account_balance_pence` | Account balance in pence (positive = credit, negative = debit) |
+| Metric | Source | Description |
+|---|---|---|
+| `octopus_account_balance_pence` | GraphQL | Account balance in pence (positive = credit, negative = debit) |
 
 Metrics are updated every 60 seconds.
 

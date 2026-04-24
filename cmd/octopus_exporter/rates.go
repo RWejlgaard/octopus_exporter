@@ -3,22 +3,22 @@ package main
 type tariffRates struct {
 	ElectricityUnitRate       float64
 	ElectricityStandingCharge float64
+	ElectricityProductCode    string
+	ElectricityTariffCode     string
+	ElectricityIsAgile        bool
 	GasUnitRate               float64
 	GasStandingCharge         float64
 }
-
-// electricityTariffFragments covers all known electricity tariff union types.
-const electricityTariffFragments = `
-	... on StandardTariff   { unitRate standingCharge }
-	... on HalfHourlyTariff { standingCharge }
-	... on PrepayTariff     { unitRate standingCharge }
-`
 
 func getRates(token string) (*tariffRates, error) {
 	result, err := doGraphQL(gqlRequest{
 		Query: `{ viewer { accounts { ... on AccountType { properties {
 			electricityMeterPoints {
-				agreements { validTo tariff {` + electricityTariffFragments + `} }
+				agreements { validTo tariff {
+					... on StandardTariff   { unitRate standingCharge productCode tariffCode }
+					... on HalfHourlyTariff { standingCharge productCode tariffCode }
+					... on PrepayTariff     { unitRate standingCharge productCode tariffCode }
+				} }
 			}
 			gasMeterPoints {
 				agreements { validTo tariff { unitRate standingCharge } }
@@ -41,6 +41,13 @@ func getRates(token string) (*tariffRates, error) {
 				if tariff := activeAgreementTariff(mp); tariff != nil {
 					rates.ElectricityUnitRate, _ = tariff["unitRate"].(float64)
 					rates.ElectricityStandingCharge, _ = tariff["standingCharge"].(float64)
+					rates.ElectricityProductCode, _ = tariff["productCode"].(string)
+					rates.ElectricityTariffCode, _ = tariff["tariffCode"].(string)
+					// HalfHourlyTariff has no unitRate field — detect Agile by absence.
+					_, rates.ElectricityIsAgile = tariff["unitRates"]
+					if _, hasUnit := tariff["unitRate"]; !hasUnit {
+						rates.ElectricityIsAgile = true
+					}
 				}
 			}
 

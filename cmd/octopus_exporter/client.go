@@ -10,7 +10,7 @@ import (
 	"strconv"
 )
 
-const octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
+var octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
 
 type gqlRequest struct {
 	OperationName string         `json:"operationName,omitempty"`
