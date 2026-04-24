@@ -1,13 +1,34 @@
 # octopus_exporter
 
-A Prometheus exporter for live electricity consumption data from [Octopus Energy](https://octopus.energy), using the Kraken GraphQL API.
+A Prometheus exporter for Octopus Energy smart meter data, using the Kraken GraphQL API.
 
 ## Metrics
 
+### Electricity
+
 | Metric | Description |
 |---|---|
-| `octopus_live_consumption` | Live electricity demand in watts |
-| `octopus_live_consumption_last_read` | Timestamp of the last meter reading (Unix epoch) |
+| `octopus_electricity_demand_watts` | Live electricity demand in watts |
+| `octopus_electricity_last_read_timestamp` | Unix timestamp of last electricity reading |
+| `octopus_electricity_unit_rate_pence` | Current unit rate in pence per kWh |
+| `octopus_electricity_standing_charge_pence` | Current standing charge in pence per day |
+
+### Gas
+
+Gas metrics are only exposed if a smart gas meter is found on the account.
+
+| Metric | Description |
+|---|---|
+| `octopus_gas_demand_watts` | Live gas demand in watts |
+| `octopus_gas_last_read_timestamp` | Unix timestamp of last gas reading |
+| `octopus_gas_unit_rate_pence` | Current unit rate in pence per kWh |
+| `octopus_gas_standing_charge_pence` | Current standing charge in pence per day |
+
+### Account
+
+| Metric | Description |
+|---|---|
+| `octopus_account_balance_pence` | Account balance in pence (positive = credit, negative = debit) |
 
 Metrics are updated every 60 seconds.
 
@@ -16,12 +37,15 @@ Metrics are updated every 60 seconds.
 | Variable | Required | Description |
 |---|---|---|
 | `OCTOPUS_API_KEY` | Yes | Your Octopus Energy API key |
-| `OCTOPUS_MPAN` | No | Filter by MPAN (recommended if you have multiple meters) |
-| `OCTOPUS_SERIAL` | No | Filter by meter serial number |
-| `OCTOPUS_DEVICE_ID` | No | Use a specific smart device ID directly |
+| `OCTOPUS_MPAN` | No | Filter electricity meter by MPAN |
+| `OCTOPUS_SERIAL` | No | Filter electricity meter by serial number |
+| `OCTOPUS_DEVICE_ID` | No | Use a specific electricity smart device ID directly |
+| `OCTOPUS_GAS_MPRN` | No | Filter gas meter by MPRN |
+| `OCTOPUS_GAS_SERIAL` | No | Filter gas meter by serial number |
+| `OCTOPUS_GAS_DEVICE_ID` | No | Use a specific gas smart device ID directly |
 | `PORT` | No | Port to expose metrics on (default: `9359`) |
 
-If none of `OCTOPUS_MPAN`, `OCTOPUS_SERIAL`, or `OCTOPUS_DEVICE_ID` are set, the exporter will automatically select the first smart meter found on your account. For accounts with multiple meters, use `OCTOPUS_MPAN` or `OCTOPUS_SERIAL` to pin to a specific one.
+If no filter variables are set, the exporter auto-discovers the first smart meter of each type found on the account. Use `OCTOPUS_MPAN` / `OCTOPUS_MPRN` to pin to a specific meter on accounts with multiple meters.
 
 Your API key can be found in the [Octopus Energy developer dashboard](https://octopus.energy/dashboard/new/accounts/personal-details/api-access).
 
