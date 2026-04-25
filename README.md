@@ -63,6 +63,20 @@ docker run -d \
   rwejlgaard/octopus_exporter
 ```
 
+## Docker Compose
+
+```yaml
+services:
+  octopus-exporter:
+    image: rwejlgaard/octopus_exporter:latest
+    restart: unless-stopped
+    environment:
+      OCTOPUS_API_KEY: sk_live_...
+      OCTOPUS_MPAN: "1234567890123"   # optional, auto-discovered if omitted
+    ports:
+      - "9359:9359"
+```
+
 ## Running from source
 
 Requires Go 1.22+.
