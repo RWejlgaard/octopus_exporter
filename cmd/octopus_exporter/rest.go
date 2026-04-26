@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/url"
 )
@@ -14,17 +13,14 @@ func doREST(path string, params url.Values) (map[string]any, error) {
 	if len(params) > 0 {
 		u += "?" + params.Encode()
 	}
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.SetBasicAuth(apiKey, "")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := executeWithRetry(func() (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.SetBasicAuth(apiKey, "")
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}

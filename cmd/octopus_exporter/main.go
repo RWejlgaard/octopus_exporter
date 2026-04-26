@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -43,7 +44,13 @@ func main() {
 		log.Fatalf("failed to get initial token: %v", err)
 	}
 
-	elecMeter, err := resolveMeter(token, electricity)
+	log.Println("discovering meters from account...")
+	candidates, err := getMeters(token)
+	if err != nil {
+		log.Fatalf("failed to discover meters: %v", err)
+	}
+
+	elecMeter, err := resolveMeter(candidates, electricity)
 	if err != nil {
 		log.Fatalf("failed to resolve electricity meter: %v", err)
 	}
@@ -51,7 +58,7 @@ func main() {
 		log.Fatal("no electricity smart meter found on account")
 	}
 
-	gasMeter, err := resolveMeter(token, gas)
+	gasMeter, err := resolveMeter(candidates, gas)
 	if err != nil {
 		log.Fatalf("failed to resolve gas meter: %v", err)
 	}
@@ -111,18 +118,28 @@ func main() {
 		}
 	}()
 
+	tryRefresh := func(err error) {
+		if !errors.Is(err, errTokenExpired) {
+			return
+		}
+		t, e := getKrakenToken(apiKey)
+		if e != nil {
+			log.Printf("token refresh failed: %v", e)
+			return
+		}
+		token = t
+	}
+
 	for {
 		// Electricity telemetry (live demand)
 		if elecMeter.deviceID != "" {
 			reading, err := getLiveConsumption(token, elecMeter.deviceID)
 			if err != nil {
 				log.Printf("electricity telemetry error: %v", err)
-				if token, err = getKrakenToken(apiKey); err != nil {
-					log.Printf("token refresh failed: %v", err)
-				}
+				tryRefresh(err)
 			} else {
 				elecDemand.Set(float64(reading.Demand))
-				if t, err := time.Parse("2006-01-02T15:04:05+00:00", reading.ReadAt); err == nil {
+				if t, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
 					elecLastRead.Set(float64(t.Unix()))
 				}
 			}
@@ -133,9 +150,10 @@ func main() {
 			reading, err := getLiveConsumption(token, gasMeter.deviceID)
 			if err != nil {
 				log.Printf("gas telemetry error: %v", err)
+				tryRefresh(err)
 			} else {
 				gasDemand.Set(float64(reading.Demand))
-				if t, err := time.Parse("2006-01-02T15:04:05+00:00", reading.ReadAt); err == nil {
+				if t, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
 					gasLastRead.Set(float64(t.Unix()))
 				}
 			}
@@ -167,6 +185,7 @@ func main() {
 		rates, err := getRates(token)
 		if err != nil {
 			log.Printf("rates error: %v", err)
+			tryRefresh(err)
 		} else {
 			unitRate := rates.ElectricityUnitRate
 			if rates.ElectricityIsAgile && rates.ElectricityProductCode != "" && rates.ElectricityTariffCode != "" {
@@ -190,6 +209,7 @@ func main() {
 		balance, err := getAccountBalance(token)
 		if err != nil {
 			log.Printf("account balance error: %v", err)
+			tryRefresh(err)
 		} else {
 			accountBalance.Set(balance)
 		}

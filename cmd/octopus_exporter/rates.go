@@ -65,7 +65,11 @@ func getRates(token string) (*tariffRates, error) {
 
 // activeAgreementTariff returns the tariff map for the agreement with validTo == null.
 func activeAgreementTariff(meterPoint any) map[string]any {
-	for _, ag := range toSlice(meterPoint.(map[string]any)["agreements"]) {
+	mp, ok := meterPoint.(map[string]any)
+	if !ok {
+		return nil
+	}
+	for _, ag := range toSlice(mp["agreements"]) {
 		agm := ag.(map[string]any)
 		if agm["validTo"] == nil {
 			tariff, _ := agm["tariff"].(map[string]any)

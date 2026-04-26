@@ -57,7 +57,10 @@ func getMeters(token string) ([]meterCandidate, error) {
 	for _, a := range accounts {
 		props, _ := a.(map[string]any)["properties"].([]any)
 		for _, p := range props {
-			pm := p.(map[string]any)
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
 
 			for _, mp := range toSlice(pm["electricityMeterPoints"]) {
 				mpan, _ := mp.(map[string]any)["mpan"].(string)
@@ -99,7 +102,7 @@ func getMeters(token string) ([]meterCandidate, error) {
 
 // resolveMeter finds the meter matching the env var filters for the given kind.
 // Returns (nil, nil) if no meter of that kind exists on the account.
-func resolveMeter(token string, kind meterKind) (*resolvedMeter, error) {
+func resolveMeter(candidates []meterCandidate, kind meterKind) (*resolvedMeter, error) {
 	var wantDeviceID, wantID, wantSerial string
 	switch kind {
 	case electricity:
@@ -110,12 +113,6 @@ func resolveMeter(token string, kind meterKind) (*resolvedMeter, error) {
 		wantDeviceID = os.Getenv("OCTOPUS_GAS_DEVICE_ID")
 		wantID = os.Getenv("OCTOPUS_GAS_MPRN")
 		wantSerial = os.Getenv("OCTOPUS_GAS_SERIAL")
-	}
-
-	log.Printf("discovering %s meters from account...", kind)
-	candidates, err := getMeters(token)
-	if err != nil {
-		return nil, err
 	}
 
 	for _, c := range candidates {

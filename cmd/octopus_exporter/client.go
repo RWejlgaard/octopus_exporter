@@ -6,11 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
-var octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
+var (
+	octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
+	httpClient     = &http.Client{Timeout: 15 * time.Second}
+)
 
 type gqlRequest struct {
 	OperationName string         `json:"operationName,omitempty"`
@@ -39,25 +45,62 @@ func (f *jsonFloat) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// executeWithRetry executes an HTTP request, retrying on 429 with exponential
+// backoff (honouring Retry-After when present). Returns the raw response body.
+func executeWithRetry(makeReq func() (*http.Request, error)) ([]byte, error) {
+	const maxRetries = 5
+	backoff := 30 * time.Second
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := makeReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == maxRetries {
+				return nil, errors.New("rate limited: max retries exceeded")
+			}
+			wait := backoff
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, err := strconv.Atoi(ra); err == nil {
+					wait = time.Duration(secs) * time.Second
+				}
+			}
+			log.Printf("rate limited; retrying in %v (attempt %d/%d)", wait, attempt+1, maxRetries)
+			time.Sleep(wait)
+			backoff *= 2
+			continue
+		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	return nil, errors.New("rate limited: max retries exceeded")
+}
+
 func doGraphQL(req gqlRequest, authToken string) (map[string]any, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequest(http.MethodPost, octopusGraphQL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if authToken != "" {
-		httpReq.Header.Set("Authorization", "JWT "+authToken)
-	}
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := executeWithRetry(func() (*http.Request, error) {
+		httpReq, err := http.NewRequest(http.MethodPost, octopusGraphQL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if authToken != "" {
+			httpReq.Header.Set("Authorization", "JWT "+authToken)
+		}
+		return httpReq, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +110,11 @@ func doGraphQL(req gqlRequest, authToken string) (map[string]any, error) {
 	}
 	if errs, ok := result["errors"].([]any); ok && len(errs) > 0 {
 		if e, ok := errs[0].(map[string]any); ok {
-			return nil, fmt.Errorf("GraphQL error: %s", e["message"])
+			msg, _ := e["message"].(string)
+			if strings.Contains(msg, "JWT") && strings.Contains(msg, "expired") {
+				return nil, errTokenExpired
+			}
+			return nil, fmt.Errorf("GraphQL error: %s", msg)
 		}
 		return nil, errors.New("GraphQL error")
 	}
