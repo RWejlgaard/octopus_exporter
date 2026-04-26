@@ -18,9 +18,6 @@ func getLiveConsumption(token, deviceID string) (*telemetryReading, error) {
 		Query:         "query getSmartMeterTelemetry($meterDeviceId: String!, $start: DateTime, $end: DateTime, $grouping: TelemetryGrouping) {\n  smartMeterTelemetry(deviceId: $meterDeviceId, start: $start, end: $end, grouping: $grouping) {\n    readAt\n    consumption\n    demand\n    __typename\n  }\n}\n",
 	}, token)
 	if err != nil {
-		if err.Error() == "GraphQL error: Signature of the JWT has expired." {
-			return nil, errTokenExpired
-		}
 		return nil, err
 	}
 
