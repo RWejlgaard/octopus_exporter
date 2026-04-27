@@ -16,9 +16,8 @@ func TestGetLatestConsumption_ReturnsLatestInterval(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	c, err := getLatestConsumption(electricity, "MPAN123", "SERIAL456")
+	c, err := getLatestConsumption(electricity, "MPAN123", "SERIAL456", "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -33,9 +32,8 @@ func TestGetLatestConsumption_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	_, err := getLatestConsumption(electricity, "MPAN123", "SERIAL456")
+	_, err := getLatestConsumption(electricity, "MPAN123", "SERIAL456", "test")
 	if err == nil {
 		t.Error("expected error for empty results, got nil")
 	}
@@ -51,12 +49,25 @@ func TestGetLatestConsumption_GasPath(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	getLatestConsumption(gas, "MPRN789", "SERIAL456")
+	getLatestConsumption(gas, "MPRN789", "SERIAL456", "test")
 
 	want := "/v1/gas-meter-points/MPRN789/meters/SERIAL456/consumption/"
 	if capturedPath != want {
 		t.Errorf("got path %q, want %q", capturedPath, want)
+	}
+}
+
+func TestGetLatestConsumption_Non200Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"unauthorized"}`)
+	}))
+	defer srv.Close()
+	octopusREST = srv.URL
+
+	_, err := getLatestConsumption(electricity, "MPAN123", "SERIAL456", "bad-key")
+	if err == nil {
+		t.Error("expected error for 401, got nil")
 	}
 }

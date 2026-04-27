@@ -12,7 +12,7 @@ type consumptionReading struct {
 	IntervalStart time.Time
 }
 
-func getLatestConsumption(kind meterKind, id, serial string) (*consumptionReading, error) {
+func getLatestConsumption(kind meterKind, id, serial, key string) (*consumptionReading, error) {
 	var path string
 	switch kind {
 	case electricity:
@@ -25,7 +25,7 @@ func getLatestConsumption(kind meterKind, id, serial string) (*consumptionReadin
 	result, err := doREST(path, url.Values{
 		"period_from": {time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)},
 		"order_by":    {"period"},
-	})
+	}, key)
 	if err != nil {
 		return nil, err
 	}
@@ -35,9 +35,16 @@ func getLatestConsumption(kind meterKind, id, serial string) (*consumptionReadin
 		return nil, errors.New("no consumption data in last 24h")
 	}
 
-	latest := results[len(results)-1].(map[string]any)
+	latest, ok := results[len(results)-1].(map[string]any)
+	if !ok {
+		return nil, errors.New("unexpected API response: invalid result entry")
+	}
 	kwh, _ := latest["consumption"].(float64)
-	start, err := time.Parse(time.RFC3339, latest["interval_start"].(string))
+	startStr, ok := latest["interval_start"].(string)
+	if !ok {
+		return nil, errors.New("unexpected API response: missing interval_start")
+	}
+	start, err := time.Parse(time.RFC3339, startStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse interval_start: %w", err)
 	}

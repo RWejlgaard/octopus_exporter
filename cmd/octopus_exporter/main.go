@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,6 +35,10 @@ func envOrDefault(key, def string) string {
 
 func gauge(name, help string) prometheus.Gauge {
 	return prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help})
+}
+
+func counter(name, help string) prometheus.Counter {
+	return prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
 }
 
 func main() {
@@ -83,20 +89,27 @@ func main() {
 	// Account
 	accountBalance := gauge("octopus_account_balance_pence", "Account balance in pence (positive = credit, negative = debit)")
 
+	// Exporter health
+	exporterUp := gauge("octopus_up", "1 if the last poll cycle completed without errors, 0 otherwise")
+	pollErrors := counter("octopus_poll_errors_total", "Total number of collector errors per poll cycle")
+	tokenRefreshCount := counter("octopus_token_refreshes_total", "Total number of successful JWT token refreshes")
+	rateLimitRetries = counter("octopus_rate_limit_retries_total", "Total number of 429 rate-limit retries across all requests")
+
 	toRegister := []prometheus.Collector{
 		elecDemand, elecLastRead,
 		elecConsumption, elecConsumptionInterval,
 		elecUnitRate, elecStandingCharge,
 		accountBalance,
+		exporterUp, pollErrors, tokenRefreshCount, rateLimitRetries,
 	}
 
 	var (
-		gasDemand            prometheus.Gauge
-		gasLastRead          prometheus.Gauge
-		gasConsumption       prometheus.Gauge
+		gasDemand              prometheus.Gauge
+		gasLastRead            prometheus.Gauge
+		gasConsumption         prometheus.Gauge
 		gasConsumptionInterval prometheus.Gauge
-		gasUnitRate          prometheus.Gauge
-		gasStandCharge       prometheus.Gauge
+		gasUnitRate            prometheus.Gauge
+		gasStandCharge         prometheus.Gauge
 	)
 	if gasMeter != nil {
 		gasDemand = gauge("octopus_gas_demand_watts", "Live gas demand in watts")
@@ -118,100 +131,170 @@ func main() {
 		}
 	}()
 
-	tryRefresh := func(err error) {
+	// tokenMu guards token across concurrent poll goroutines.
+	var tokenMu sync.RWMutex
+
+	// withToken calls fn with the current token, refreshing once on JWT expiry.
+	withToken := func(fn func(string) error) error {
+		tokenMu.RLock()
+		t := token
+		tokenMu.RUnlock()
+
+		err := fn(t)
 		if !errors.Is(err, errTokenExpired) {
-			return
+			return err
 		}
-		t, e := getKrakenToken(apiKey)
-		if e != nil {
-			log.Printf("token refresh failed: %v", e)
-			return
+
+		// Only one goroutine refreshes; others will pick up the new token.
+		tokenMu.Lock()
+		if token == t {
+			newT, e := getKrakenToken(apiKey)
+			if e != nil {
+				tokenMu.Unlock()
+				log.Printf("token refresh failed: %v", e)
+				return err
+			}
+			token = newT
+			tokenRefreshCount.Inc()
 		}
-		token = t
+		newT := token
+		tokenMu.Unlock()
+
+		return fn(newT)
 	}
 
 	for {
+		var (
+			wg        sync.WaitGroup
+			failedAny atomic.Bool
+		)
+
+		fail := func(format string, args ...any) {
+			log.Printf(format, args...)
+			pollErrors.Inc()
+			failedAny.Store(true)
+		}
+
+		collect := func(name string, fn func() error) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := fn(); err != nil {
+					fail("%s error: %v", name, err)
+				}
+			}()
+		}
+
 		// Electricity telemetry (live demand)
 		if elecMeter.deviceID != "" {
-			reading, err := getLiveConsumption(token, elecMeter.deviceID)
-			if err != nil {
-				log.Printf("electricity telemetry error: %v", err)
-				tryRefresh(err)
-			} else {
-				elecDemand.Set(float64(reading.Demand))
-				if t, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
-					elecLastRead.Set(float64(t.Unix()))
-				}
-			}
+			collect("electricity telemetry", func() error {
+				return withToken(func(t string) error {
+					reading, err := getLiveConsumption(t, elecMeter.deviceID)
+					if err != nil {
+						return err
+					}
+					elecDemand.Set(float64(reading.Demand))
+					if ts, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
+						elecLastRead.Set(float64(ts.Unix()))
+					}
+					return nil
+				})
+			})
 		}
 
 		// Gas telemetry (live demand)
 		if gasMeter != nil && gasMeter.deviceID != "" {
-			reading, err := getLiveConsumption(token, gasMeter.deviceID)
-			if err != nil {
-				log.Printf("gas telemetry error: %v", err)
-				tryRefresh(err)
-			} else {
-				gasDemand.Set(float64(reading.Demand))
-				if t, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
-					gasLastRead.Set(float64(t.Unix()))
-				}
-			}
+			collect("gas telemetry", func() error {
+				return withToken(func(t string) error {
+					reading, err := getLiveConsumption(t, gasMeter.deviceID)
+					if err != nil {
+						return err
+					}
+					gasDemand.Set(float64(reading.Demand))
+					if ts, err := time.Parse(time.RFC3339, reading.ReadAt); err == nil {
+						gasLastRead.Set(float64(ts.Unix()))
+					}
+					return nil
+				})
+			})
 		}
 
 		// Electricity half-hourly consumption (REST)
 		if elecMeter.mpan != "" && elecMeter.serial != "" {
-			c, err := getLatestConsumption(electricity, elecMeter.mpan, elecMeter.serial)
-			if err != nil {
-				log.Printf("electricity consumption error: %v", err)
-			} else {
+			collect("electricity consumption", func() error {
+				c, err := getLatestConsumption(electricity, elecMeter.mpan, elecMeter.serial, apiKey)
+				if err != nil {
+					return err
+				}
 				elecConsumption.Set(c.KWh)
 				elecConsumptionInterval.Set(float64(c.IntervalStart.Unix()))
-			}
+				return nil
+			})
 		}
 
 		// Gas half-hourly consumption (REST)
 		if gasMeter != nil && gasMeter.mprn != "" && gasMeter.serial != "" {
-			c, err := getLatestConsumption(gas, gasMeter.mprn, gasMeter.serial)
-			if err != nil {
-				log.Printf("gas consumption error: %v", err)
-			} else {
+			collect("gas consumption", func() error {
+				c, err := getLatestConsumption(gas, gasMeter.mprn, gasMeter.serial, apiKey)
+				if err != nil {
+					return err
+				}
 				gasConsumption.Set(c.KWh)
 				gasConsumptionInterval.Set(float64(c.IntervalStart.Unix()))
-			}
+				return nil
+			})
 		}
 
-		// Tariff rates
-		rates, err := getRates(token)
-		if err != nil {
-			log.Printf("rates error: %v", err)
-			tryRefresh(err)
-		} else {
-			unitRate := rates.ElectricityUnitRate
-			if rates.ElectricityIsAgile && rates.ElectricityProductCode != "" && rates.ElectricityTariffCode != "" {
-				agileRate, err := getCurrentAgileRate(rates.ElectricityProductCode, rates.ElectricityTariffCode)
+		// Tariff rates (result needed for optional agile lookup after wg.Wait)
+		var collectedRates *tariffRates
+		collect("rates", func() error {
+			return withToken(func(t string) error {
+				r, err := getRates(t)
 				if err != nil {
-					log.Printf("agile rate error: %v", err)
+					return err
+				}
+				collectedRates = r
+				return nil
+			})
+		})
+
+		// Account balance
+		collect("account balance", func() error {
+			return withToken(func(t string) error {
+				balance, err := getAccountBalance(t)
+				if err != nil {
+					return err
+				}
+				accountBalance.Set(balance)
+				return nil
+			})
+		})
+
+		wg.Wait()
+
+		// Agile rate depends on the rates result, so it runs after the parallel phase.
+		if collectedRates != nil {
+			unitRate := collectedRates.ElectricityUnitRate
+			if collectedRates.ElectricityIsAgile && collectedRates.ElectricityProductCode != "" && collectedRates.ElectricityTariffCode != "" {
+				agileRate, err := getCurrentAgileRate(collectedRates.ElectricityProductCode, collectedRates.ElectricityTariffCode, apiKey)
+				if err != nil {
+					fail("agile rate error: %v", err)
 				} else {
 					unitRate = agileRate
 				}
 			}
 			elecUnitRate.Set(unitRate)
-			elecStandingCharge.Set(rates.ElectricityStandingCharge)
-
+			elecStandingCharge.Set(collectedRates.ElectricityStandingCharge)
 			if gasMeter != nil {
-				gasUnitRate.Set(rates.GasUnitRate)
-				gasStandCharge.Set(rates.GasStandingCharge)
+				gasUnitRate.Set(collectedRates.GasUnitRate)
+				gasStandCharge.Set(collectedRates.GasStandingCharge)
 			}
 		}
 
-		// Account balance
-		balance, err := getAccountBalance(token)
-		if err != nil {
-			log.Printf("account balance error: %v", err)
-			tryRefresh(err)
+		if failedAny.Load() {
+			exporterUp.Set(0)
 		} else {
-			accountBalance.Set(balance)
+			exporterUp.Set(1)
 		}
 
 		time.Sleep(60 * time.Second)

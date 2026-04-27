@@ -11,11 +11,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
-	octopusGraphQL = "https://api.octopus.energy/v1/graphql/"
-	httpClient     = &http.Client{Timeout: 15 * time.Second}
+	octopusGraphQL   = "https://api.octopus.energy/v1/graphql/"
+	httpClient       = &http.Client{Timeout: 15 * time.Second}
+	rateLimitRetries prometheus.Counter
 )
 
 type gqlRequest struct {
@@ -64,6 +67,9 @@ func executeWithRetry(makeReq func() (*http.Request, error)) ([]byte, error) {
 			if attempt == maxRetries {
 				return nil, errors.New("rate limited: max retries exceeded")
 			}
+			if rateLimitRetries != nil {
+				rateLimitRetries.Inc()
+			}
 			wait := backoff
 			if ra := resp.Header.Get("Retry-After"); ra != "" {
 				if secs, err := strconv.Atoi(ra); err == nil {
@@ -79,6 +85,13 @@ func executeWithRetry(makeReq func() (*http.Request, error)) ([]byte, error) {
 		resp.Body.Close()
 		if err != nil {
 			return nil, err
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			snippet := strings.TrimSpace(string(raw))
+			if len(snippet) > 200 {
+				snippet = snippet[:200]
+			}
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
 		}
 		return raw, nil
 	}

@@ -53,7 +53,9 @@ func getMeters(token string) ([]meterCandidate, error) {
 
 	var candidates []meterCandidate
 
-	accounts, _ := result["data"].(map[string]any)["viewer"].(map[string]any)["accounts"].([]any)
+	data, _ := result["data"].(map[string]any)
+	viewer, _ := data["viewer"].(map[string]any)
+	accounts, _ := viewer["accounts"].([]any)
 	for _, a := range accounts {
 		props, _ := a.(map[string]any)["properties"].([]any)
 		for _, p := range props {
@@ -63,33 +65,59 @@ func getMeters(token string) ([]meterCandidate, error) {
 			}
 
 			for _, mp := range toSlice(pm["electricityMeterPoints"]) {
-				mpan, _ := mp.(map[string]any)["mpan"].(string)
-				for _, m := range toSlice(mp.(map[string]any)["meters"]) {
-					serial, _ := m.(map[string]any)["serialNumber"].(string)
-					for _, d := range toSlice(m.(map[string]any)["smartDevices"]) {
-						deviceID, _ := d.(map[string]any)["deviceId"].(string)
+				mpPoint, ok := mp.(map[string]any)
+				if !ok {
+					continue
+				}
+				mpan, _ := mpPoint["mpan"].(string)
+				for _, m := range toSlice(mpPoint["meters"]) {
+					meterMap, ok := m.(map[string]any)
+					if !ok {
+						continue
+					}
+					serial, _ := meterMap["serialNumber"].(string)
+					devices := toSlice(meterMap["smartDevices"])
+					for _, d := range devices {
+						dMap, ok := d.(map[string]any)
+						if !ok {
+							continue
+						}
+						deviceID, _ := dMap["deviceId"].(string)
 						if deviceID != "" {
 							candidates = append(candidates, meterCandidate{kind: electricity, mpan: mpan, serial: serial, deviceID: deviceID})
 						}
 					}
 					// Include meters without smart devices so we can still use the REST consumption endpoint.
-					if len(toSlice(m.(map[string]any)["smartDevices"])) == 0 && serial != "" {
+					if len(devices) == 0 && serial != "" {
 						candidates = append(candidates, meterCandidate{kind: electricity, mpan: mpan, serial: serial})
 					}
 				}
 			}
 
 			for _, mp := range toSlice(pm["gasMeterPoints"]) {
-				mprn, _ := mp.(map[string]any)["mprn"].(string)
-				for _, m := range toSlice(mp.(map[string]any)["meters"]) {
-					serial, _ := m.(map[string]any)["serialNumber"].(string)
-					for _, d := range toSlice(m.(map[string]any)["smartDevices"]) {
-						deviceID, _ := d.(map[string]any)["deviceId"].(string)
+				mpPoint, ok := mp.(map[string]any)
+				if !ok {
+					continue
+				}
+				mprn, _ := mpPoint["mprn"].(string)
+				for _, m := range toSlice(mpPoint["meters"]) {
+					meterMap, ok := m.(map[string]any)
+					if !ok {
+						continue
+					}
+					serial, _ := meterMap["serialNumber"].(string)
+					devices := toSlice(meterMap["smartDevices"])
+					for _, d := range devices {
+						dMap, ok := d.(map[string]any)
+						if !ok {
+							continue
+						}
+						deviceID, _ := dMap["deviceId"].(string)
 						if deviceID != "" {
 							candidates = append(candidates, meterCandidate{kind: gas, mprn: mprn, serial: serial, deviceID: deviceID})
 						}
 					}
-					if len(toSlice(m.(map[string]any)["smartDevices"])) == 0 && serial != "" {
+					if len(devices) == 0 && serial != "" {
 						candidates = append(candidates, meterCandidate{kind: gas, mprn: mprn, serial: serial})
 					}
 				}

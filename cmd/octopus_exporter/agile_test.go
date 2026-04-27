@@ -15,9 +15,8 @@ func TestGetCurrentAgileRate_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	rate, err := getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C")
+	rate, err := getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C", "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,9 +31,8 @@ func TestGetCurrentAgileRate_NoSlot(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	_, err := getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C")
+	_, err := getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C", "test")
 	if err == nil {
 		t.Error("expected error for empty slot, got nil")
 	}
@@ -48,9 +46,8 @@ func TestGetCurrentAgileRate_CorrectPath(t *testing.T) {
 	}))
 	defer srv.Close()
 	octopusREST = srv.URL
-	apiKey = "test"
 
-	getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C")
+	getCurrentAgileRate("AGILE-24-10-01", "E-1R-AGILE-24-10-01-C", "test")
 
 	want := "/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-C/standard-unit-rates/"
 	if capturedPath != want {

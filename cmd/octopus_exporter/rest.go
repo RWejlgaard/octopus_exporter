@@ -8,7 +8,7 @@ import (
 
 var octopusREST = "https://api.octopus.energy"
 
-func doREST(path string, params url.Values) (map[string]any, error) {
+func doREST(path string, params url.Values, key string) (map[string]any, error) {
 	u := octopusREST + path
 	if len(params) > 0 {
 		u += "?" + params.Encode()
@@ -18,7 +18,7 @@ func doREST(path string, params url.Values) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		req.SetBasicAuth(apiKey, "")
+		req.SetBasicAuth(key, "")
 		return req, nil
 	})
 	if err != nil {
