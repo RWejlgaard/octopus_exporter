@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 type telemetryReading struct {
@@ -21,7 +22,11 @@ func getLiveConsumption(token, deviceID string) (*telemetryReading, error) {
 		return nil, err
 	}
 
-	telemetry := toSlice(result["data"].(map[string]any)["smartMeterTelemetry"])
+	data, ok := result["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected API response: missing data field")
+	}
+	telemetry := toSlice(data["smartMeterTelemetry"])
 	if len(telemetry) == 0 {
 		return nil, errors.New("no telemetry data returned")
 	}

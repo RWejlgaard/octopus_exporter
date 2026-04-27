@@ -31,11 +31,16 @@ func getRates(token string) (*tariffRates, error) {
 
 	rates := &tariffRates{}
 
-	accounts, _ := result["data"].(map[string]any)["viewer"].(map[string]any)["accounts"].([]any)
+	data, _ := result["data"].(map[string]any)
+	viewer, _ := data["viewer"].(map[string]any)
+	accounts, _ := viewer["accounts"].([]any)
 	for _, a := range accounts {
 		props, _ := a.(map[string]any)["properties"].([]any)
 		for _, p := range props {
-			pm := p.(map[string]any)
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
 
 			for _, mp := range toSlice(pm["electricityMeterPoints"]) {
 				if tariff := activeAgreementTariff(mp); tariff != nil {
@@ -44,7 +49,6 @@ func getRates(token string) (*tariffRates, error) {
 					rates.ElectricityProductCode, _ = tariff["productCode"].(string)
 					rates.ElectricityTariffCode, _ = tariff["tariffCode"].(string)
 					// HalfHourlyTariff has no unitRate field — detect Agile by absence.
-					_, rates.ElectricityIsAgile = tariff["unitRates"]
 					if _, hasUnit := tariff["unitRate"]; !hasUnit {
 						rates.ElectricityIsAgile = true
 					}
@@ -70,7 +74,10 @@ func activeAgreementTariff(meterPoint any) map[string]any {
 		return nil
 	}
 	for _, ag := range toSlice(mp["agreements"]) {
-		agm := ag.(map[string]any)
+		agm, ok := ag.(map[string]any)
+		if !ok {
+			continue
+		}
 		if agm["validTo"] == nil {
 			tariff, _ := agm["tariff"].(map[string]any)
 			return tariff

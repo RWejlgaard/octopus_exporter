@@ -9,7 +9,7 @@ import (
 
 // getCurrentAgileRate returns the unit rate (inc. VAT, pence/kWh) for the current
 // half-hour slot from the Agile tariff REST endpoint.
-func getCurrentAgileRate(productCode, tariffCode string) (float64, error) {
+func getCurrentAgileRate(productCode, tariffCode, key string) (float64, error) {
 	now := time.Now().UTC()
 	slotStart := now.Truncate(30 * time.Minute)
 	slotEnd := slotStart.Add(30 * time.Minute)
@@ -18,7 +18,7 @@ func getCurrentAgileRate(productCode, tariffCode string) (float64, error) {
 	result, err := doREST(path, url.Values{
 		"period_from": {slotStart.Format(time.RFC3339)},
 		"period_to":   {slotEnd.Format(time.RFC3339)},
-	})
+	}, key)
 	if err != nil {
 		return 0, err
 	}
